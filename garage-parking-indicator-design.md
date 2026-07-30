@@ -66,6 +66,7 @@ stateDiagram-v2
 
     PARKED_IDLE --> LEAVING: distance exits tolerance band
     LEAVING --> EMPTY_IDLE: distance exceeds approach threshold
+    LEAVING --> CORRECT: distance re-enters tolerance band
 
     EMPTY_IDLE --> CALIBRATING: button long-press + valid target
     PARKED_IDLE --> CALIBRATING: button long-press + valid target
@@ -80,7 +81,9 @@ Starting from `EMPTY_IDLE`: the sensor watches for anything closer than the appr
 
 From `APPROACHING`: if distance keeps decreasing and settles within the tolerance band around home for the debounce period, move to `CORRECT`, acknowledge, then `PARKED_IDLE`. If distance decreases past the far edge of the tolerance band, move to `TOO_FAR` and stay awake — a driver mid-overshoot needs live feedback, not a device that's gone back to sleep. If instead the distance trend reverses and grows back past the approach threshold — someone pulled up, changed their mind, and backed out — drop straight back to `EMPTY_IDLE` with no indication. That's the "ignore a car that's leaving" case: it never reached `CORRECT` or `TOO_FAR`, so there's nothing to walk back.
 
-From `PARKED_IDLE`: the sensor watches for distance leaving the tolerance band. When it does, wake into `LEAVING`. Show nothing — a departing car doesn't need approach or overshoot feedback, those only make sense for an arrival. Stay in `LEAVING`, unlit, until distance exceeds the approach threshold, then drop to `EMPTY_IDLE`.
+From `PARKED_IDLE`: the sensor watches for distance leaving the tolerance band. When it does, wake into `LEAVING`. Show nothing — a departing car doesn't need approach or overshoot feedback, those only make sense for an arrival. Stay in `LEAVING`, unlit, until distance exceeds the approach threshold, then drop to `EMPTY_IDLE` — unless distance re-enters the tolerance band first, in which case recover straight to `CORRECT`.
+
+Bench-testing caught a real bug in the first draft here: `LEAVING` only checked for the distance exceeding the approach threshold, with no path back to `CORRECT`. A car (or a hand, on the bench) that drifts out of tolerance and settles back into place — without ever crossing the much larger approach threshold — got stuck showing nothing indefinitely, because the only way out of `LEAVING` was a departure that was never actually happening. Fixed by checking `in_tolerance` first, same pattern already used in `TOO_FAR`.
 
 From `TOO_FAR`: if the driver corrects and distance moves back into the tolerance band, go to `CORRECT`. If they give up and back out past the approach threshold, go to `EMPTY_IDLE`, same as any other departure.
 

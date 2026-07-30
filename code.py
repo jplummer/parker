@@ -288,6 +288,13 @@ def run():
                     break
                 d = read_distance_mm()
                 debug("LEAVING d={}".format(d))
+                if in_tolerance(d, home_mm):
+                    # Settled back into place - a real departure never got
+                    # going, or the car shifted and re-settled. Recover to
+                    # CORRECT rather than getting stuck here indefinitely.
+                    state = STATE_CORRECT
+                    debug("-> CORRECT (back in position)")
+                    break
                 if not within_approach(d, home_mm):
                     if depart_start is None:
                         depart_start = time.monotonic()
