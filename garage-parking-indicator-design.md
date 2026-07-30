@@ -1,7 +1,7 @@
 # Garage Parking Indicator — Design Doc
 
-Status: prototype phase 1 parts ordered, awaiting arrival
-Last updated: 2026-07-16
+Status: phase 1 hardware bring-up done, state machine running on real hardware, two bugs found and fixed via bench testing
+Last updated: 2026-07-30
 
 ## Project brief
 
@@ -45,8 +45,8 @@ No breadboard, no external LEDs, no external button. This is the smallest possib
 | `APPROACHING` | Something has entered the near zone and distance is decreasing toward home. | MCU awake, sensor polled fast, live feedback. |
 | `CORRECT` | Distance has settled inside the tolerance band around home. | MCU awake briefly to confirm and acknowledge, then drops to `PARKED_IDLE`. |
 | `TOO_FAR` | Distance has passed home and kept closing — car has overshot. | MCU awake, sensor polled fast, alert feedback, stays awake until resolved. |
-| `LEAVING` | Distance is opening up from a parked or too-far position. | MCU awake just long enough to confirm the trend, no indication shown, then drops to `EMPTY_IDLE` once clear. |
-| `CALIBRATING` | Button long-press while a valid target is in range. | MCU awake, brief. |
+| `LEAVING` | Distance is opening up from a parked or too-far position. | Awake but polls at the same 1 Hz idle cadence, not the fast 150ms rate — no indication shown, drops to `EMPTY_IDLE` or recovers to `CORRECT` once clear. |
+| Setting distance | Button long-press while a valid target is in range. Not a peer `state` value in code — it's a function call that runs synchronously from inside whichever state was active, then returns. | MCU awake, brief. Success: saves, 3 green blinks, forces `PARKED_IDLE`. Failure (no valid target): 3 red blinks, no save, returns to whatever state it was already in. |
 
 ### State diagram
 
@@ -68,10 +68,14 @@ stateDiagram-v2
     LEAVING --> EMPTY_IDLE: distance exceeds approach threshold
     LEAVING --> CORRECT: distance re-enters tolerance band
 
-    EMPTY_IDLE --> CALIBRATING: button long-press + valid target
-    PARKED_IDLE --> CALIBRATING: button long-press + valid target
-    CALIBRATING --> PARKED_IDLE: calibration saved
+    EMPTY_IDLE --> SettingDistance: button long-press
+    PARKED_IDLE --> SettingDistance: button long-press
+    SettingDistance --> PARKED_IDLE: valid target - saved, 3 green blinks
+    SettingDistance --> EMPTY_IDLE: no valid target - not saved, 3 red blinks, unchanged
+    SettingDistance --> PARKED_IDLE: no valid target - not saved, 3 red blinks, unchanged
 ```
+
+("Setting distance" isn't a peer state the way the others are - it's a function call, not a branch of the state variable. Its two "no valid target" arrows above just mean "returns to whichever state it was called from, unchanged"; they aren't really new states to reach.)
 
 Kept as Mermaid rather than draw.io on purpose: it's text, so it lives in this file and changes with the design instead of drifting out of sync in a separate binary. Most markdown viewers (GitHub, VS Code, many note apps) render it inline. If you want a polished version for a presentation later, draw.io is the better tool for that specific job — but for a working doc that changes weekly, text-as-diagram wins.
 
@@ -100,9 +104,13 @@ The key trick, and the reason this doesn't need velocity sensing or anything fan
 
 None of these are validated yet — they're reasonable starting guesses, not measurements. First bench session should log real distance traces for a car pulling in, parking, and pulling out, so these numbers can be set from data instead of intuition.
 
+**Idle poll rate** (`IDLE_POLL_S`, currently 1.0 s): this sets how often the sensor is checked in `EMPTY_IDLE`, `PARKED_IDLE`, and `LEAVING`. A car doesn't appear or finish leaving in under a second, so this could likely slow to 2–3 s without missing anything real, trading a little responsiveness for less time spent awake per hour. Worth revisiting once current-draw measurements are in — the power difference across a whole day of mostly-idle time adds up more than the fast states do.
+
 ### Calibration
 
 Button long-press while the car is parked where you want it. On release after the hold threshold, read the current distance, validate it's a real in-range reading (30 mm–4,000 mm, not a "no target" result), store it as `D_home` in non-volatile memory so it survives power loss, and acknowledge with the NeoPixel — a short green flash sequence for now, standing in for whatever the final acknowledgment looks like on the real display. If the reading is invalid (no target in range), skip the save and flash a different color to signal the calibration didn't take.
+
+Second bug the diagram review caught: the function that runs this used to report success back to the main loop regardless of whether the save actually happened — a failed attempt (no target in range) still forced a jump to `PARKED_IDLE`. On a first-ever calibration attempt that failed, that meant landing in `PARKED_IDLE` with `D_home` still unset, and the very next distance comparison would have crashed. Fixed: it now only reports success when a distance was actually saved; a failed attempt returns to whatever state it was called from, unchanged.
 
 ### Power strategy — open question
 
@@ -122,6 +130,7 @@ Recommendation: **build phase 1 on Option B.** It matches the "STEMMA QT cable o
 - Whether the VL53L1X STEMMA QT breakout ships with GPIO1/XSHUT header pins pre-soldered, in case Option A becomes necessary later.
 - What happens if the bay sees a false target — a person walking through, a bicycle leaned against the wall — while idle. Current design treats it like any other approach: wakes, runs the state machine, times out back to `EMPTY_IDLE` when the object doesn't settle in the tolerance band. Costs a wake cycle, not correctness. Worth confirming that's an acceptable trade rather than adding object-classification logic.
 - Power source decision (wall wart / battery / rechargeable) is blocked on real current measurements from the state machine above.
+- **Sensor orientation toward the garage door, not just the car**: raised as a brainstorm, not designed yet. If the unit ends up mounted facing the door rather than straight down the bay at the car, the VL53L1X's ~3.6 m range could see the door itself opening and closing as a separate, earlier signal than car distance — potentially more lead time before a car ever comes into view. This depends entirely on real mount geometry (how far the door is, what's between the sensor and the door, whether the door's motion path stays in the sensor's field of view) and would need its own state logic — a "door opened" signal isn't the same thing as "car approaching" and probably shouldn't be conflated with it. Not pursuing until phase 1's car-facing logic is validated; noting it here so it isn't lost.
 
 ## Bring-up notes (confirmed against Adafruit's QT Py S3 pinout guide)
 
@@ -130,7 +139,7 @@ Recommendation: **build phase 1 on Option B.** It matches the "STEMMA QT cable o
 
 - `board.STEMMA_I2C()` and `board.NEOPIXEL` are correct as used in `code.py` — confirmed against the official pinout page.
 - Important gotcha: the STEMMA QT connector is a **second, separate I2C bus** (`SCL1`/`SDA1`), not the same as the `board.SCL`/`board.SDA` header pins. `board.STEMMA_I2C()` addresses the right one. Don't wire anything to the SCL/SDA header pads expecting it to talk to the STEMMA QT sensor — it won't.
-- The GPIO0 "boot" button is confirmed reusable as a plain input-with-pullup after boot. What's **not** confirmed yet is the exact `board.*` constant CircuitPython uses for it on this board — could be `board.BUTTON`, `board.BOOT0`, or something else. Check once CircuitPython is installed: open the REPL and run `import board; print(dir(board))`, find the button's real name in the list, and fix the `button = digitalio.DigitalInOut(board.BUTTON)` line in `code.py` if it's not actually `BUTTON`.
+- The GPIO0 "boot" button is confirmed reusable as a plain input-with-pullup after boot. Confirmed via REPL (`import board; print(dir(board))`) that the correct constant on this board is `board.BUTTON` — `code.py` already uses it.
 
 ## Next steps
 

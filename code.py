@@ -3,12 +3,12 @@
 #           + GPIO0 "boot" button, read as a plain input for calibration.
 # See garage-parking-indicator-design.md for the full design rationale.
 #
-# STATUS: first draft, written against library docs, not yet run on hardware.
-# Verify against real parts before trusting any of this, especially:
-#   - board.STEMMA_I2C() / board.NEOPIXEL / board.BUTTON pin names for this
-#     specific board (confirm against the QT Py S3 CircuitPython pinout)
-#   - vl53l1x distance_mode / timing_budget valid ranges
-#   - button polarity (assumed active-low with internal pull-up)
+# STATUS: running on real hardware. board.STEMMA_I2C() / board.NEOPIXEL /
+# board.BUTTON pin names confirmed against the QT Py S3. Two real bugs found
+# and fixed via bench testing so far - see design doc Transitions section for
+# both: LEAVING getting stuck with no path back to CORRECT, and a calibration
+# failure being reported as success. Distance parameters below are still
+# unvalidated starting guesses pending real car testing.
 #
 # Needs these libraries in CIRCUITPY/lib:
 #   adafruit_vl53l1x.mpy
@@ -96,9 +96,7 @@ pixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=BRIGHTNESS)
 
 # GPIO0 / "BOOT" button. Adafruit's product notes describe this pin as usable
 # for user input after boot, in addition to its bootloader-select role.
-# Confirm the correct board.* pin name once the board's pinout doc is in hand
-# — this may be board.BUTTON, board.BOOT, or board.D0 depending on the
-# CircuitPython build.
+# board.BUTTON confirmed correct via REPL (import board; print(dir(board))).
 button = digitalio.DigitalInOut(board.BUTTON)
 button.switch_to_input(pull=digitalio.Pull.UP)  # assumed active-low
 
@@ -151,16 +149,22 @@ def try_calibrate():
         if time.monotonic() - press_start >= CAL_HOLD_S:
             d = read_distance_mm()
             debug("hold threshold reached, distance={}".format(d))
+            calibrated = False
             if d is not None:
                 save_home_distance(d)
                 debug("calibrated: home_mm={}".format(d))
                 blink(COLOR_CAL_OK, 3)
+                calibrated = True
             else:
-                debug("calibration failed: no valid target")
+                debug("calibration failed: no valid target - not saved")
                 blink(COLOR_CAL_FAIL, 3)
             while button_pressed():
                 time.sleep(0.01)
-            return True
+            # Only report success when a distance was actually saved. A
+            # failed attempt (no target in range) must NOT force a state
+            # change - previously this returned True either way, which
+            # could jump to PARKED_IDLE with no home distance ever set.
+            return calibrated
         time.sleep(0.01)
     debug("button released before hold threshold - no calibration")
     return False  # released before the hold threshold - not a calibration
