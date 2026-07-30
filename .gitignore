@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.AppleDouble
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# Python bytecode, in case any local tooling scripts get added later
+__pycache__/
+*.pyc
+
+# CircuitPython / firmware binaries - large, easily re-downloaded, not source
+*.uf2
+*.bin
+
+# Adafruit CircuitPython Bundle, if downloaded locally for circup/offline use -
+# these are compiled third-party libraries, not code we wrote. Note which
+# versions are in use in the design doc instead of committing the binaries.
+adafruit-circuitpython-bundle*/
+lib/*.mpy
+
+# CircuitPython settings.toml can hold WiFi credentials or API keys once this
+# project starts using them - keep it local, never commit it.
+settings.toml
+
+# Editor cruft
+.vscode/
+.idea/
+*.swp
