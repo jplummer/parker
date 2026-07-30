@@ -44,7 +44,7 @@ No breadboard, no external LEDs, no external button. This is the smallest possib
 | `PARKED_IDLE` | Car is in the bay, in the correct spot. | MCU in light sleep, sensor polled on a slow timer. |
 | `APPROACHING` | Something has entered the near zone and distance is decreasing toward home. | MCU awake, sensor polled fast, live feedback. |
 | `CORRECT` | Distance has settled inside the tolerance band around home. | MCU awake briefly to confirm and acknowledge, then drops to `PARKED_IDLE`. |
-| `TOO_FAR` | Distance has passed home and kept closing — car has overshot. | MCU awake, sensor polled fast, alert feedback, stays awake until resolved. |
+| `TOO_CLOSE` | Distance has passed home and kept closing — car has overshot, sitting closer to the sensor than the calibrated spot. | MCU awake, sensor polled fast, alert feedback, stays awake until resolved. |
 | `LEAVING` | Distance is opening up from a parked or too-far position. | Awake but polls at the same 1 Hz idle cadence, not the fast 150ms rate — no indication shown, drops to `EMPTY_IDLE` or recovers to `CORRECT` once clear. |
 | Setting distance | Button long-press while a valid target is in range. Not a peer `state` value in code — it's a function call that runs synchronously from inside whichever state was active, then returns. | MCU awake, brief. Success: saves, 3 green blinks, forces `PARKED_IDLE`. Failure (no valid target): 3 red blinks, no save, returns to whatever state it was already in. |
 
@@ -57,12 +57,12 @@ stateDiagram-v2
     EMPTY_IDLE --> APPROACHING: object closer than approach threshold
     APPROACHING --> EMPTY_IDLE: trend reverses, exits approach threshold
     APPROACHING --> CORRECT: settles in tolerance band
-    APPROACHING --> TOO_FAR: passes home, keeps closing
+    APPROACHING --> TOO_CLOSE: passes home, keeps closing
 
     CORRECT --> PARKED_IDLE: brief acknowledgment shown
 
-    TOO_FAR --> CORRECT: driver corrects position
-    TOO_FAR --> EMPTY_IDLE: backs out past approach threshold
+    TOO_CLOSE --> CORRECT: driver corrects position
+    TOO_CLOSE --> EMPTY_IDLE: backs out past approach threshold
 
     PARKED_IDLE --> LEAVING: distance exits tolerance band
     LEAVING --> EMPTY_IDLE: distance exceeds approach threshold
@@ -83,13 +83,15 @@ Kept as Mermaid rather than draw.io on purpose: it's text, so it lives in this f
 
 Starting from `EMPTY_IDLE`: the sensor watches for anything closer than the approach threshold. When it sees one, wake into `APPROACHING`.
 
-From `APPROACHING`: if distance keeps decreasing and settles within the tolerance band around home for the debounce period, move to `CORRECT`, acknowledge, then `PARKED_IDLE`. If distance decreases past the far edge of the tolerance band, move to `TOO_FAR` and stay awake — a driver mid-overshoot needs live feedback, not a device that's gone back to sleep. If instead the distance trend reverses and grows back past the approach threshold — someone pulled up, changed their mind, and backed out — drop straight back to `EMPTY_IDLE` with no indication. That's the "ignore a car that's leaving" case: it never reached `CORRECT` or `TOO_FAR`, so there's nothing to walk back.
+From `APPROACHING`: if distance keeps decreasing and settles within the tolerance band around home for the debounce period, move to `CORRECT`, acknowledge, then `PARKED_IDLE`. If distance decreases past the near edge of the tolerance band, move to `TOO_CLOSE` and stay awake — a driver mid-overshoot needs live feedback, not a device that's gone back to sleep. If instead the distance trend reverses and grows back past the approach threshold — someone pulled up, changed their mind, and backed out — drop straight back to `EMPTY_IDLE` with no indication. That's the "ignore a car that's leaving" case: it never reached `CORRECT` or `TOO_CLOSE`, so there's nothing to walk back.
+
+Renamed from `TOO_FAR` to `TOO_CLOSE`: the old name described the driver's frame of reference (pulled too far into the garage), but the state itself is defined purely by the sensor's reading — distance has gotten *closer* to the sensor than the calibrated spot. `TOO_FAR` reads backwards next to a distance value that's shrinking. `TOO_CLOSE` matches what the number is actually doing, and stays correct no matter which way the device ends up mounted.
 
 From `PARKED_IDLE`: the sensor watches for distance leaving the tolerance band. When it does, wake into `LEAVING`. Show nothing — a departing car doesn't need approach or overshoot feedback, those only make sense for an arrival. Stay in `LEAVING`, unlit, until distance exceeds the approach threshold, then drop to `EMPTY_IDLE` — unless distance re-enters the tolerance band first, in which case recover straight to `CORRECT`.
 
-Bench-testing caught a real bug in the first draft here: `LEAVING` only checked for the distance exceeding the approach threshold, with no path back to `CORRECT`. A car (or a hand, on the bench) that drifts out of tolerance and settles back into place — without ever crossing the much larger approach threshold — got stuck showing nothing indefinitely, because the only way out of `LEAVING` was a departure that was never actually happening. Fixed by checking `in_tolerance` first, same pattern already used in `TOO_FAR`.
+Bench-testing caught a real bug in the first draft here: `LEAVING` only checked for the distance exceeding the approach threshold, with no path back to `CORRECT`. A car (or a hand, on the bench) that drifts out of tolerance and settles back into place — without ever crossing the much larger approach threshold — got stuck showing nothing indefinitely, because the only way out of `LEAVING` was a departure that was never actually happening. Fixed by checking `in_tolerance` first, same pattern already used in `TOO_CLOSE`.
 
-From `TOO_FAR`: if the driver corrects and distance moves back into the tolerance band, go to `CORRECT`. If they give up and back out past the approach threshold, go to `EMPTY_IDLE`, same as any other departure.
+From `TOO_CLOSE`: if the driver corrects and distance moves back into the tolerance band, go to `CORRECT`. If they give up and back out past the approach threshold, go to `EMPTY_IDLE`, same as any other departure.
 
 The key trick, and the reason this doesn't need velocity sensing or anything fancy: the meaning of a distance reading depends entirely on which idle state we woke from. Waking from `EMPTY_IDLE` means someone's arriving, so we run the approach/correct/too-far logic. Waking from `PARKED_IDLE` means someone's leaving, so we suppress all of that and just wait for the bay to clear. Same sensor, same readings, different interpretation based on context.
 
@@ -128,9 +130,26 @@ Recommendation: **build phase 1 on Option B.** It matches the "STEMMA QT cable o
 
 - Real garage bay depth and sensor mount position — needed to set the approach threshold sensibly, and to pick the VL53L1X distance mode (short/medium/long) and timing budget that covers the actual range needed without wasting power on unnecessary accuracy.
 - Whether the VL53L1X STEMMA QT breakout ships with GPIO1/XSHUT header pins pre-soldered, in case Option A becomes necessary later.
-- What happens if the bay sees a false target — a person walking through, a bicycle leaned against the wall — while idle. Current design treats it like any other approach: wakes, runs the state machine, times out back to `EMPTY_IDLE` when the object doesn't settle in the tolerance band. Costs a wake cycle, not correctness. Worth confirming that's an acceptable trade rather than adding object-classification logic.
+- Confirmed, not open anymore: a false target — a person walking through, a bicycle leaned against the wall — needs no special handling. See "Future considerations" below.
 - Power source decision (wall wart / battery / rechargeable) is blocked on real current measurements from the state machine above.
-- **Sensor orientation toward the garage door, not just the car**: raised as a brainstorm, not designed yet. If the unit ends up mounted facing the door rather than straight down the bay at the car, the VL53L1X's ~3.6 m range could see the door itself opening and closing as a separate, earlier signal than car distance — potentially more lead time before a car ever comes into view. This depends entirely on real mount geometry (how far the door is, what's between the sensor and the door, whether the door's motion path stays in the sensor's field of view) and would need its own state logic — a "door opened" signal isn't the same thing as "car approaching" and probably shouldn't be conflated with it. Not pursuing until phase 1's car-facing logic is validated; noting it here so it isn't lost.
+- Sensor mount orientation (facing the door vs. facing something else) — see "Future considerations" below.
+
+## Future considerations: sensor mount orientation
+
+Raised as a brainstorm 2026-07-30, not designed or coded yet. Two likely mounting positions:
+
+- **Facing the garage door.** The sensor's empty-bay baseline reading is the closed door. When the door opens, that baseline usually jumps to a much longer reading first — the beam now reaches past the door to the driveway or street — before the car itself ever comes into view. That's a second, earlier signal than "car approaching."
+- **Facing something else** (a wall, a shelf, the far end of the bay). The sensor never sees the door at all. The baseline is just whatever's in front of it, and the only signal available is the car breaking that baseline by getting closer — the logic already built for phase 1.
+
+Rather than build two modes and make the person choose one during setup, the design should adapt on its own. The idea: instead of only watching for the reading to get closer than the approach threshold (today's logic), also watch the same reading for any deviation from the idle-state baseline in *either* direction — closer or farther — beyond ordinary sensor noise, and treat any deviation as a reason to poll faster and pay closer attention. In the door-facing case, that catches the door opening as an early signal, well before the car is close enough to trip the existing approach logic. In the wall-facing case there's no farther-direction event to catch, so the existing closer-direction logic does all the work — the code doesn't need to know or be told which mount case it's in.
+
+Caveat: door-opening jumps aren't reliably large. Usually the driveway or street beyond is much farther than the closed door, so the jump is big and easy to catch. But if a car is already idling close behind the door, waiting for it to open, the reading only grows by roughly the door's own thickness — a small jump, easy to miss or mistake for noise. Whatever deviation threshold gets picked needs to tolerate that case without false-triggering on ordinary sensor jitter.
+
+This dovetails with the `IDLE_POLL_S` tuning note above: stay at the slow idle rate right up until a deviation is detected, then step polling up, rather than running fast continuously on the chance a door might open.
+
+Confirmed, not a concern: people or objects passing through the bay, with or without a car present, don't need special handling either way. They look like any other approach — the state machine wakes, doesn't settle within tolerance, and times back out to `EMPTY_IDLE`. Costs a wake cycle, not correctness. Same reasoning covers a false door-jump trigger above: worst case is an extra wake cycle spent watching for a car that never comes.
+
+Not designed further than this — no new state, no tuned threshold, no code — until phase 1's core car-facing logic is validated on the bench. How the idle baseline itself gets established and kept current (a fixed value learned once vs. something that adapts if, say, a car ends up parked outside a window in the sensor's view) is itself an open question once this gets built.
 
 ## Bring-up notes (confirmed against Adafruit's QT Py S3 pinout guide)
 

@@ -49,7 +49,7 @@ BRIGHTNESS = 0.2
 COLOR_OFF = (0, 0, 0)
 COLOR_APPROACH = (40, 40, 255)  # blue: something's coming
 COLOR_CORRECT = (0, 255, 0)  # green: right spot
-COLOR_TOO_FAR = (255, 20, 0)  # red: overshot
+COLOR_TOO_CLOSE = (255, 20, 0)  # red: overshot, closer to the sensor than home
 COLOR_CAL_OK = (0, 255, 0)
 COLOR_CAL_FAIL = (255, 0, 0)
 
@@ -177,7 +177,7 @@ STATE_EMPTY_IDLE = "EMPTY_IDLE"
 STATE_PARKED_IDLE = "PARKED_IDLE"
 STATE_APPROACHING = "APPROACHING"
 STATE_CORRECT = "CORRECT"
-STATE_TOO_FAR = "TOO_FAR"
+STATE_TOO_CLOSE = "TOO_CLOSE"
 STATE_LEAVING = "LEAVING"
 
 
@@ -236,7 +236,7 @@ def run():
                 if not within_approach(d, home_mm):
                     # Backed out or gave up before arriving. No indication -
                     # this is the "ignore a car that's leaving" case; it
-                    # never reached CORRECT or TOO_FAR, so there's nothing
+                    # never reached CORRECT or TOO_CLOSE, so there's nothing
                     # to walk back.
                     state = STATE_EMPTY_IDLE
                     show_color(COLOR_OFF)
@@ -250,8 +250,8 @@ def run():
                         debug("-> CORRECT")
                         break
                 elif d < home_mm - TOLERANCE_MM:
-                    state = STATE_TOO_FAR
-                    debug("-> TOO_FAR")
+                    state = STATE_TOO_CLOSE
+                    debug("-> TOO_CLOSE")
                     break
                 else:
                     settle_start = None  # bounced back out of the band, reset
@@ -264,13 +264,13 @@ def run():
             state = STATE_PARKED_IDLE
             debug("-> PARKED_IDLE")
 
-        elif state == STATE_TOO_FAR:
-            show_color(COLOR_TOO_FAR)
+        elif state == STATE_TOO_CLOSE:
+            show_color(COLOR_TOO_CLOSE)
             while True:
                 if button_pressed():
                     break
                 d = read_distance_mm()
-                debug("TOO_FAR d={}".format(d))
+                debug("TOO_CLOSE d={}".format(d))
                 if not within_approach(d, home_mm):
                     state = STATE_EMPTY_IDLE
                     show_color(COLOR_OFF)
@@ -278,7 +278,7 @@ def run():
                     break
                 if in_tolerance(d, home_mm):
                     state = STATE_CORRECT
-                    debug("-> CORRECT (corrected from too far)")
+                    debug("-> CORRECT (corrected from too close)")
                     break
                 time.sleep(ACTIVE_POLL_S)
 
