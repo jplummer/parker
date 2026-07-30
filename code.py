@@ -53,6 +53,15 @@ COLOR_TOO_FAR = (255, 20, 0)  # red: overshot
 COLOR_CAL_OK = (0, 255, 0)
 COLOR_CAL_FAIL = (255, 0, 0)
 
+# Debug prints. Flip to False once things are working - printing over USB
+# serial has a small cost and isn't needed once the state machine is trusted.
+DEBUG = True
+
+
+def debug(msg):
+    if DEBUG:
+        print(msg)
+
 # ---------------------------------------------------------------------------
 # Non-volatile storage for the calibrated home distance.
 # Survives power loss, unlike anything held in RAM. Layout:
@@ -136,19 +145,24 @@ def light_sleep(seconds):
 def try_calibrate():
     """Call as soon as the button is observed pressed. Blocks until release.
     Only saves if held past CAL_HOLD_S with a valid target in range."""
+    debug("button pressed, waiting for {}s hold to calibrate".format(CAL_HOLD_S))
     press_start = time.monotonic()
     while button_pressed():
         if time.monotonic() - press_start >= CAL_HOLD_S:
             d = read_distance_mm()
+            debug("hold threshold reached, distance={}".format(d))
             if d is not None:
                 save_home_distance(d)
+                debug("calibrated: home_mm={}".format(d))
                 blink(COLOR_CAL_OK, 3)
             else:
+                debug("calibration failed: no valid target")
                 blink(COLOR_CAL_FAIL, 3)
             while button_pressed():
                 time.sleep(0.01)
             return True
         time.sleep(0.01)
+    debug("button released before hold threshold - no calibration")
     return False  # released before the hold threshold - not a calibration
 
 
@@ -174,6 +188,7 @@ def within_approach(d_mm, home_mm):
 def run():
     home_mm = load_home_distance()
     state = STATE_EMPTY_IDLE if home_mm is None else STATE_PARKED_IDLE
+    debug("startup: state={} home_mm={}".format(state, home_mm))
 
     while True:
         # Calibration can happen from any idle moment, regardless of state.
@@ -181,6 +196,7 @@ def run():
             if try_calibrate():
                 home_mm = load_home_distance()
                 state = STATE_PARKED_IDLE
+                debug("-> PARKED_IDLE (just calibrated)")
             continue
 
         if state == STATE_EMPTY_IDLE:
@@ -189,15 +205,19 @@ def run():
                 light_sleep(IDLE_POLL_S)
                 continue
             d = read_distance_mm()
+            debug("EMPTY_IDLE d={}".format(d))
             if within_approach(d, home_mm):
                 state = STATE_APPROACHING
+                debug("-> APPROACHING")
             else:
                 light_sleep(IDLE_POLL_S)
 
         elif state == STATE_PARKED_IDLE:
             d = read_distance_mm()
+            debug("PARKED_IDLE d={}".format(d))
             if not in_tolerance(d, home_mm):
                 state = STATE_LEAVING
+                debug("-> LEAVING")
             else:
                 light_sleep(IDLE_POLL_S)
 
@@ -208,6 +228,7 @@ def run():
                 if button_pressed():
                     break
                 d = read_distance_mm()
+                debug("APPROACHING d={}".format(d))
                 if not within_approach(d, home_mm):
                     # Backed out or gave up before arriving. No indication -
                     # this is the "ignore a car that's leaving" case; it
@@ -215,15 +236,18 @@ def run():
                     # to walk back.
                     state = STATE_EMPTY_IDLE
                     show_color(COLOR_OFF)
+                    debug("-> EMPTY_IDLE (backed out before arriving)")
                     break
                 if in_tolerance(d, home_mm):
                     if settle_start is None:
                         settle_start = time.monotonic()
                     elif time.monotonic() - settle_start >= SETTLE_DEBOUNCE_S:
                         state = STATE_CORRECT
+                        debug("-> CORRECT")
                         break
                 elif d < home_mm - TOLERANCE_MM:
                     state = STATE_TOO_FAR
+                    debug("-> TOO_FAR")
                     break
                 else:
                     settle_start = None  # bounced back out of the band, reset
@@ -234,6 +258,7 @@ def run():
             time.sleep(1.0)  # brief acknowledgment before going quiet
             show_color(COLOR_OFF)
             state = STATE_PARKED_IDLE
+            debug("-> PARKED_IDLE")
 
         elif state == STATE_TOO_FAR:
             show_color(COLOR_TOO_FAR)
@@ -241,12 +266,15 @@ def run():
                 if button_pressed():
                     break
                 d = read_distance_mm()
+                debug("TOO_FAR d={}".format(d))
                 if not within_approach(d, home_mm):
                     state = STATE_EMPTY_IDLE
                     show_color(COLOR_OFF)
+                    debug("-> EMPTY_IDLE (backed all the way out)")
                     break
                 if in_tolerance(d, home_mm):
                     state = STATE_CORRECT
+                    debug("-> CORRECT (corrected from too far)")
                     break
                 time.sleep(ACTIVE_POLL_S)
 
@@ -259,11 +287,13 @@ def run():
                 if button_pressed():
                     break
                 d = read_distance_mm()
+                debug("LEAVING d={}".format(d))
                 if not within_approach(d, home_mm):
                     if depart_start is None:
                         depart_start = time.monotonic()
                     elif time.monotonic() - depart_start >= DEPART_DEBOUNCE_S:
                         state = STATE_EMPTY_IDLE
+                        debug("-> EMPTY_IDLE")
                         break
                 else:
                     depart_start = None  # car paused or crept back in, reset
